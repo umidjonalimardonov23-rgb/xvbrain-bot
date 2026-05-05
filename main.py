@@ -4,9 +4,9 @@ import sqlite3
 import telebot
 from telebot import types
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "TOKEN_BU_YERGA")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
-CARD_NUMBER = os.getenv("CARD_NUMBER", "8600 0000 0000 0000")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8622896451:AAEGNwj6eBliVcg6AWf-O7xJ-r6N2f1gs8I")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8787603995"))
+CARD_NUMBER = os.getenv("CARD_NUMBER", "9860606760806673")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
