@@ -296,9 +296,10 @@ def main_menu():
 def admin_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📋 Buyurtmalar", "💳 To'lovlar")
-    kb.row("🎁 Bonus pul berish", "👥 Foydalanuvchilar")
-    kb.row("📊 Statistika", "📈 Hisobot")
-    kb.row("💬 Support xabarlar", "📢 Xabar yuborish")
+    kb.row("📅 Obunalar", "👤 User boshqarish")
+    kb.row("🎁 Bonus pul berish", "📊 Statistika")
+    kb.row("📈 Hisobot", "💬 Support xabarlar")
+    kb.row("📢 Xabar yuborish", "👥 Foydalanuvchilar")
     kb.row("🔙 Asosiy menyu")
     return kb
 
@@ -767,7 +768,8 @@ MENU_BUTTONS = [
     "🤖 Bot yaratish", "⚡️ Pro bot yaratish", "📋 Botlarim", "💰 Hisobim",
     "💳 Pul kiritish", "👥 Referal", "📕 Qo'llanma", "☎️ Qo'llab-quvvatlash",
     "📋 Buyurtmalar", "💳 To'lovlar", "🎁 Bonus pul berish", "👥 Foydalanuvchilar",
-    "📊 Statistika", "📢 Xabar yuborish", "🔙 Asosiy menyu"
+    "📊 Statistika", "📢 Xabar yuborish", "🔙 Asosiy menyu",
+    "📅 Obunalar", "👤 User boshqarish", "📈 Hisobot", "💬 Support xabarlar"
 ]
 
 @bot.message_handler(func=lambda m: states.get(m.from_user.id, {}).get("step") == "amount")
@@ -1199,6 +1201,331 @@ def admin_broadcast(message):
 
     bot.send_message(message.chat.id, f"✅ Xabar yuborildi!\n\n✅ Muvaffaqiyatli: {sent}\n❌ Yuborilmadi: {failed}", reply_markup=admin_menu())
 
+# ───────────────────────── ADMIN: OBUNALAR ─────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📅 Obunalar" and m.from_user.id == ADMIN_ID)
+def admin_subscriptions(message):
+    import datetime
+    cur.execute("""SELECT o.id, o.user_id, u.username, o.bot_type, o.tariff, o.price, o.status, o.expires_at
+                   FROM orders o LEFT JOIN users u ON o.user_id=u.user_id
+                   WHERE o.status IN ('approved','expired')
+                   ORDER BY o.expires_at ASC LIMIT 20""")
+    rows = cur.fetchall()
+    if not rows:
+        bot.send_message(message.chat.id, "📭 Hozircha faol obuna yo'q.")
+        return
+    now = int(time.time())
+    for r in rows:
+        oid, uid, uname, btype, tariff, price, status, exp = r
+        ustr = f"@{uname}" if uname else str(uid)
+        if exp and exp > 0:
+            exp_str = datetime.datetime.fromtimestamp(exp).strftime("%d.%m.%Y")
+            qoldi = exp - now
+            if qoldi < 0:
+                vaqt = f"❌ {abs(qoldi)//86400} kun o'tgan"
+            elif qoldi < 86400:
+                vaqt = f"⚠️ {qoldi//3600} soat qoldi"
+            else:
+                vaqt = f"✅ {qoldi//86400} kun qoldi"
+        else:
+            exp_str = "—"
+            vaqt = "—"
+        st_emoji = "✅" if status == "approved" else "❌"
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("➕ 1 hafta uzaytir", callback_data=f"aext_{oid}_{uid}"),
+            types.InlineKeyboardButton("⛔ To'xtat", callback_data=f"astop_{oid}_{uid}") if status == "approved"
+                else types.InlineKeyboardButton("▶️ Faollashtir", callback_data=f"aact_{oid}_{uid}"),
+        )
+        kb.add(types.InlineKeyboardButton(f"✉️ Userga xabar", callback_data=f"amsg_{uid}"))
+        bot.send_message(message.chat.id, f"""{st_emoji} <b>Obuna #{oid}</b>
+
+👤 {ustr} | <code>{uid}</code>
+🤖 {btype} | 💎 {tariff}
+💰 {price:,} so'm/hafta
+📅 Muddat: {exp_str}
+⏱ {vaqt}""", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("aext_"))
+def admin_extend(call):
+    if call.from_user.id != ADMIN_ID: return
+    import datetime
+    _, oid, uid = call.data.split("_")
+    oid, uid = int(oid), int(uid)
+    cur.execute("SELECT expires_at, bot_type FROM orders WHERE id=?", (oid,))
+    row = cur.fetchone()
+    now = int(time.time())
+    cur_exp = row[0] if row and row[0] else now
+    new_exp = max(cur_exp, now) + WEEK
+    cur.execute("UPDATE orders SET expires_at=?, status='approved', reminded=0 WHERE id=?", (new_exp, oid))
+    conn.commit()
+    exp_str = datetime.datetime.fromtimestamp(new_exp).strftime("%d.%m.%Y")
+    bot.answer_callback_query(call.id, f"✅ {exp_str} gacha uzaytirildi")
+    try:
+        bot.send_message(uid, f"✅ <b>Obuna uzaytirildi!</b>\n\n📅 Yangi muddat: <b>{exp_str}</b>\n\nAdmin tomonidan qo'shildi 🎉")
+    except: pass
+    bot.send_message(call.message.chat.id, f"✅ #{oid} buyurtma {exp_str} gacha uzaytirildi.", reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("astop_"))
+def admin_stop_sub(call):
+    if call.from_user.id != ADMIN_ID: return
+    _, oid, uid = call.data.split("_")
+    oid, uid = int(oid), int(uid)
+    cur.execute("UPDATE orders SET status='expired' WHERE id=?", (oid,))
+    conn.commit()
+    bot.answer_callback_query(call.id, "⛔ To'xtatildi")
+    try:
+        bot.send_message(uid, "⛔ <b>Botingiz admin tomonidan to'xtatildi.</b>\n\nBatafsil ma'lumot uchun: @X_VBRAIN")
+    except: pass
+    bot.send_message(call.message.chat.id, f"⛔ #{oid} buyurtma to'xtatildi.", reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("aact_"))
+def admin_activate_sub(call):
+    if call.from_user.id != ADMIN_ID: return
+    import datetime
+    _, oid, uid = call.data.split("_")
+    oid, uid = int(oid), int(uid)
+    now = int(time.time())
+    new_exp = now + WEEK
+    cur.execute("UPDATE orders SET status='approved', expires_at=?, reminded=0 WHERE id=?", (new_exp, oid))
+    conn.commit()
+    exp_str = datetime.datetime.fromtimestamp(new_exp).strftime("%d.%m.%Y")
+    bot.answer_callback_query(call.id, f"▶️ Faollashtirildi — {exp_str} gacha")
+    try:
+        bot.send_message(uid, f"✅ <b>Botingiz faollashtirildi!</b>\n\n📅 Muddat: <b>{exp_str}</b> gacha")
+    except: pass
+    bot.send_message(call.message.chat.id, f"▶️ #{oid} faollashtirildi {exp_str} gacha.", reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("amsg_"))
+def admin_msg_user_start(call):
+    if call.from_user.id != ADMIN_ID: return
+    uid = int(call.data.replace("amsg_", ""))
+    states[call.from_user.id] = {"step": "sreply", "target_uid": uid, "msg_id": None}
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_admin"))
+    bot.send_message(call.message.chat.id, f"✉️ <code>{uid}</code> ga xabar yozing:", reply_markup=kb)
+
+# ───────────────────────── ADMIN: USER BOSHQARISH ─────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "👤 User boshqarish" and m.from_user.id == ADMIN_ID)
+def admin_user_manage(message):
+    states[message.from_user.id] = {"step": "find_user"}
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_admin"))
+    bot.send_message(message.chat.id, "👤 <b>User boshqarish</b>\n\nUser ID yoki @username yuboring:", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: states.get(m.from_user.id, {}).get("step") == "find_user" and m.from_user.id == ADMIN_ID)
+def admin_find_user(message):
+    import datetime
+    if message.text in MENU_BUTTONS:
+        states.pop(message.from_user.id, None)
+        bot.process_new_messages([message])
+        return
+    q = message.text.strip().lstrip("@")
+    # ID yoki username bilan qidirish
+    try:
+        uid_search = int(q)
+        cur.execute("SELECT user_id, username, balance, created_at, ref_count FROM users WHERE user_id=?", (uid_search,))
+    except ValueError:
+        cur.execute("SELECT user_id, username, balance, created_at, ref_count FROM users WHERE username=?", (q,))
+    row = cur.fetchone()
+    if not row:
+        bot.send_message(message.chat.id, "❌ User topilmadi.")
+        return
+    uid, uname, balance, created_at, ref_count = row
+    ustr = f"@{uname}" if uname else "—"
+    reg_date = datetime.datetime.fromtimestamp(created_at).strftime("%d.%m.%Y")
+    cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+    orders_cnt = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='approved'", (uid,))
+    active_cnt = cur.fetchone()[0]
+    states.pop(message.from_user.id, None)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("➕ Balans qo'sh", callback_data=f"uadd_{uid}"),
+        types.InlineKeyboardButton("➖ Balans kamayt", callback_data=f"usub_{uid}"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("🤖 Botlarini ko'r", callback_data=f"ubots_{uid}"),
+        types.InlineKeyboardButton("✉️ Xabar yubor", callback_data=f"amsg_{uid}"),
+    )
+    kb.add(types.InlineKeyboardButton("🗑 Balansni nolga tushir", callback_data=f"uzero_{uid}"))
+    bot.send_message(message.chat.id, f"""👤 <b>User ma'lumotlari</b>
+
+🆔 ID: <code>{uid}</code>
+👤 Username: {ustr}
+💰 Balans: <b>{balance:,} so'm</b>
+📅 Ro'yxat sanasi: {reg_date}
+👥 Referal: {ref_count or 0} kishi
+🤖 Jami buyurtma: {orders_cnt} ta
+✅ Aktiv bot: {active_cnt} ta""", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("uadd_") or c.data.startswith("usub_") or c.data.startswith("uzero_"))
+def admin_balance_action(call):
+    if call.from_user.id != ADMIN_ID: return
+    parts = call.data.split("_")
+    action = parts[0]
+    uid = int(parts[1])
+    if action == "uzero":
+        cur.execute("UPDATE users SET balance=0 WHERE user_id=?", (uid,))
+        conn.commit()
+        bot.answer_callback_query(call.id, "✅ Balans nolga tushirildi")
+        try: bot.send_message(uid, "⚠️ Balansiz nolga tushirildi (admin)")
+        except: pass
+        return
+    act_label = "qo'shish" if action == "uadd" else "kamaytirish"
+    states[call.from_user.id] = {"step": "admin_bal_amount", "uid": uid, "action": action}
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_admin"))
+    bot.send_message(call.message.chat.id, f"💰 Necha so'm {act_label}? (raqam yozing):", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: states.get(m.from_user.id, {}).get("step") == "admin_bal_amount" and m.from_user.id == ADMIN_ID)
+def admin_bal_amount(message):
+    if message.text in MENU_BUTTONS:
+        states.pop(message.from_user.id, None)
+        bot.process_new_messages([message])
+        return
+    try:
+        amount = int(message.text.replace(" ", "").replace(",", ""))
+    except:
+        bot.send_message(message.chat.id, "❌ Faqat raqam yozing.")
+        return
+    state = states.pop(message.from_user.id, {})
+    uid = state["uid"]
+    action = state["action"]
+    if action == "uadd":
+        cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, uid))
+        conn.commit()
+        try: bot.send_message(uid, f"💰 Balansga <b>{amount:,} so'm</b> qo'shildi!")
+        except: pass
+        bot.send_message(message.chat.id, f"✅ {uid} ga {amount:,} so'm qo'shildi.", reply_markup=admin_menu())
+    else:
+        cur.execute("UPDATE users SET balance = MAX(0, balance - ?) WHERE user_id=?", (amount, uid))
+        conn.commit()
+        try: bot.send_message(uid, f"⚠️ Balansdan <b>{amount:,} so'm</b> ayirildi.")
+        except: pass
+        bot.send_message(message.chat.id, f"✅ {uid} dan {amount:,} so'm ayirildi.", reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ubots_"))
+def admin_view_user_bots(call):
+    if call.from_user.id != ADMIN_ID: return
+    import datetime
+    uid = int(call.data.replace("ubots_", ""))
+    cur.execute("SELECT id, bot_type, tariff, price, status, expires_at FROM orders WHERE user_id=? ORDER BY id DESC", (uid,))
+    rows = cur.fetchall()
+    if not rows:
+        return bot.answer_callback_query(call.id, "Bu userda bot yo'q.")
+    now = int(time.time())
+    text = f"🤖 <b>User {uid} botlari:</b>\n\n"
+    for r in rows:
+        oid, btype, tariff, price, status, exp = r
+        if exp and exp > 0:
+            exp_str = datetime.datetime.fromtimestamp(exp).strftime("%d.%m.%Y")
+        else:
+            exp_str = "—"
+        st = {"approved": "✅", "expired": "❌", "pending": "⏳", "rejected": "🚫"}.get(status, "❓")
+        text += f"{st} #{oid} {btype} | {tariff} | {price:,} so'm | {exp_str}\n"
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📅 Barcha obunalarni ko'r", callback_data="admin_subs_all"))
+    bot.send_message(call.message.chat.id, text, reply_markup=kb)
+
+# ───────────────────────── ADMIN: HISOBOT ─────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📈 Hisobot" and m.from_user.id == ADMIN_ID)
+def admin_report(message):
+    import datetime
+    now = int(time.time())
+    day_ago = now - 86400
+    week_ago = now - WEEK
+    month_ago = now - 30 * 86400
+
+    # Kunlik
+    cur.execute("SELECT SUM(amount) FROM payments WHERE status='approved' AND created_at >= ?", (day_ago,))
+    day_income = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (day_ago,))
+    day_users = cur.fetchone()[0]
+
+    # Haftalik
+    cur.execute("SELECT SUM(amount) FROM payments WHERE status='approved' AND created_at >= ?", (week_ago,))
+    week_income = cur.fetchone()[0] or 0
+    cur.execute("SELECT SUM(amount) FROM sub_payments WHERE status='approved' AND created_at >= ?", (week_ago,))
+    week_sub_income = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,))
+    week_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status='approved' AND created_at >= ?", (week_ago,))
+    week_orders = cur.fetchone()[0]
+
+    # Oylik
+    cur.execute("SELECT SUM(amount) FROM payments WHERE status='approved' AND created_at >= ?", (month_ago,))
+    month_income = cur.fetchone()[0] or 0
+    cur.execute("SELECT SUM(amount) FROM sub_payments WHERE status='approved' AND created_at >= ?", (month_ago,))
+    month_sub = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (month_ago,))
+    month_users = cur.fetchone()[0]
+
+    # Jami
+    cur.execute("SELECT SUM(amount) FROM payments WHERE status='approved'")
+    total_pay = cur.fetchone()[0] or 0
+    cur.execute("SELECT SUM(amount) FROM sub_payments WHERE status='approved'")
+    total_sub = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status='approved'")
+    active_orders = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status='expired'")
+    expired_orders = cur.fetchone()[0]
+
+    bot.send_message(message.chat.id, f"""📈 <b>Moliyaviy hisobot</b>
+
+<b>📅 Bugun:</b>
+💰 Tushum: {day_income:,} so'm
+👤 Yangi user: {day_users} ta
+
+<b>📅 Oxirgi 7 kun:</b>
+💰 Balans to'lovi: {week_income:,} so'm
+🔄 Obuna to'lovi: {week_sub_income:,} so'm
+📊 Jami: {week_income + week_sub_income:,} so'm
+👤 Yangi user: {week_users} ta
+🤖 Yangi bot: {week_orders} ta
+
+<b>📅 Oxirgi 30 kun:</b>
+💰 Balans to'lovi: {month_income:,} so'm
+🔄 Obuna to'lovi: {month_sub:,} so'm
+📊 Jami: {month_income + month_sub:,} so'm
+👤 Yangi user: {month_users} ta
+
+<b>🏆 Jami:</b>
+💵 Balans to'lovlari: {total_pay:,} so'm
+🔄 Obuna to'lovlari: {total_sub:,} so'm
+💎 Umumiy: {total_pay + total_sub:,} so'm
+👥 Jami userlar: {total_users} ta
+✅ Aktiv botlar: {active_orders} ta
+❌ Muddati tugagan: {expired_orders} ta""")
+
+# ───────────────────────── ADMIN: SUPPORT XABARLAR ─────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "💬 Support xabarlar" and m.from_user.id == ADMIN_ID)
+def admin_support_msgs(message):
+    cur.execute("""SELECT s.id, s.user_id, u.username, s.message, s.replied, s.created_at
+                   FROM support_msgs s LEFT JOIN users u ON s.user_id=u.user_id
+                   ORDER BY s.replied ASC, s.created_at DESC LIMIT 15""")
+    rows = cur.fetchall()
+    if not rows:
+        bot.send_message(message.chat.id, "📭 Support xabarlar yo'q.")
+        return
+    for r in rows:
+        sid, uid, uname, msg_text, replied, created_at = r
+        ustr = f"@{uname}" if uname else str(uid)
+        status = "✅ Javob berilgan" if replied else "🔴 Yangi"
+        kb = types.InlineKeyboardMarkup()
+        if not replied:
+            kb.add(types.InlineKeyboardButton("↩️ Javob berish", callback_data=f"sreply_{uid}_{sid}"))
+        kb.add(types.InlineKeyboardButton("✉️ Xabar yubor", callback_data=f"amsg_{uid}"))
+        bot.send_message(message.chat.id, f"""💬 <b>Support #{sid}</b> — {status}
+
+👤 {ustr} | <code>{uid}</code>
+📝 {msg_text}""", reply_markup=kb)
+
 # ───────────────────────── OBUNA YANGILASH ─────────────────────────
 
 MENU_BUTTONS.append("🔄 Obuna yangilash")
@@ -1342,24 +1669,23 @@ def subscription_scheduler():
                            AND expires_at > ? AND expires_at <= ?
                            AND reminded=0""", (now, warn_from))
             soon = cur.fetchall()
-            for row in soon:
-                oid, uid, btype, tariff, price, exp in row:
-                    try:
-                        import datetime as dt
-                        exp_str = dt.datetime.fromtimestamp(exp).strftime("%d.%m.%Y %H:%M")
-                        kb = types.InlineKeyboardMarkup()
-                        kb.add(types.InlineKeyboardButton("💳 Obuna yangilash", callback_data=f"subrenew_{oid}"))
-                        bot.send_message(uid, f"""⚠️ <b>Obuna muddati tugayapti!</b>
+            for oid, uid, btype, tariff, price, exp in soon:
+                try:
+                    import datetime as dt
+                    exp_str = dt.datetime.fromtimestamp(exp).strftime("%d.%m.%Y %H:%M")
+                    kb = types.InlineKeyboardMarkup()
+                    kb.add(types.InlineKeyboardButton("💳 Obuna yangilash", callback_data=f"subrenew_{oid}"))
+                    bot.send_message(uid, f"""⚠️ <b>Obuna muddati tugayapti!</b>
 
 🤖 Bot: {btype}
 📅 Tugash: <b>{exp_str}</b>
 💰 To'lov: {price:,} so'm
 
 To'lov qilmasangiz bot to'xtab qoladi! ⏰""", reply_markup=kb)
-                        cur.execute("UPDATE orders SET reminded=1 WHERE id=?", (oid,))
-                        conn.commit()
-                    except Exception as e:
-                        print(f"Eslatma yuborishda xato {uid}: {e}")
+                    cur.execute("UPDATE orders SET reminded=1 WHERE id=?", (oid,))
+                    conn.commit()
+                except Exception as e:
+                    print(f"Eslatma yuborishda xato {uid}: {e}")
 
             # Muddati o'tganlar — to'xtatish
             cur.execute("""SELECT id, user_id, bot_type
